@@ -112,7 +112,7 @@ def learn(env,
     # Here, you should fill in your own code to compute the Bellman error. This requires
     # evaluating the current and next Q-values and constructing the corresponding error.
     # TensorFlow will differentiate this error for you, you just need to pass it to the
-    # optimizer. See assignment text for details.
+    # optimizer. See assignment text for dconstructoretails.
     # Your code should produce one scalar-valued tensor: total_error
     # This will be passed to the optimizer in the provided code below.
     # Your code should also produce two collections of variables:
@@ -126,9 +126,15 @@ def learn(env,
     # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
     ######
+    q_t = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
+    best = tf.argmax(q_t,axis = 1)
+    q_tp1 = q_func(obs_tp1_float,num_actions,scope='target_q_func',reuse=False)
+    target = rew_t_ph + (1-done_mask_ph)*gamma*tf.reduce_max(q_tp1,axis=1)
+    q_t_act = tf.reduce_sum(q_t*tf.one_hot(act_t_ph,num_actions),axis=1)
+    total_error = tf.losses.mean_squared_error(target, q_t_act)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
     
-    # YOUR CODE HERE
-
     ######
 
     # construct optimization op (with gradient clipping)
@@ -172,7 +178,20 @@ def learn(env,
         # transition.
         # Specifically, last_obs must point to the new latest observation.
         # Useful functions you'll need to call:
-        # obs, reward, done, info = env.step(action)
+        # if done:
+            # obs = env.reset()
+        # else:
+        idx = replay_buffer.store_frame(last_obs)
+        if not model_initialized or random.random()<exploration.value(t):
+            action = random.randint(0,num_actions-1)
+        else:
+            obs = replay_buffer.encode_recent_observation()
+            action = session.run(best,feed_dict={obs_t_ph:[obs]})
+        nextobs, reward, done, info = env.step(action)
+        replay_buffer.store_effect(idx,action,reward,done)
+        lastobs = nextobs
+        if done:
+            lastobs = env.reset()
         # this steps the environment forward one step
         # obs = env.reset()
         # this resets the environment if you reached an episode boundary.
@@ -195,7 +214,12 @@ def learn(env,
         #####
         
         # YOUR CODE HERE
-
+        if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                   obs_t_ph: obs_t_batch,
+                   obs_tp1_ph: obs_tp1_batch,
+                })
+        model_initialized = True
         #####
 
         # at this point, the environment should have been advanced one step (and
@@ -209,6 +233,8 @@ def learn(env,
         if (t > learning_starts and
                 t % learning_freq == 0 and
                 replay_buffer.can_sample(batch_size)):
+            obs_t_batch, action_batch, reward_batch,obs_tp1_batch,done_batch = replay_buffer.sample(batch_size)
+            
             # Here, you should perform training. Training consists of four steps:
             # 3.a: use the replay buffer to sample a batch of transitions (see the
             # replay buffer code for function definition, each batch that you sample
@@ -243,9 +269,19 @@ def learn(env,
             # you should update every target_update_freq steps, and you may find the
             # variable num_param_updates useful for this (it was initialized to 0)
             #####
-            
-            # YOUR CODE HERE
+            session.run(train_fn, {
+                obs_t_ph: obs_t_batch,
+                act_t_ph: action_batch,
+                rew_t_ph: reward_batch,
+                obs_tp1_ph: obs_tp1_batch,
+                done_mask_ph: done_batch,
+                learning_rate: optimizer_spec.lr_schedule.value(t),
+            })
 
+            # YOUR CODE HERE
+            num_param_updates += 1
+            if num_param_updates % target_update_freq == 0:
+                session.run(update_target_fn)
             #####
 
         ### 4. Log progress
